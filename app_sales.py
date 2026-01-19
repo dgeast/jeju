@@ -27,14 +27,17 @@ import glob
 # [데이터 로드 (캐싱 및 폴더 스캔)]
 @st.cache_data
 def load_data():
-    # [배포용 수정] 절대 경로 대신 상대 경로 사용
-    data_dir = "./data/"  # GitHub 배포 시 상대 경로 필수
-    if not os.path.exists(data_dir):
-        # 로컬 테스트용 절대 경로 백업 (필요 시 주석 해제하여 사용)
-        # data_dir = "f:/dev/FCICB6/salesdata_A/data/"
-        os.makedirs(data_dir, exist_ok=True)
-        
+    # [배포 및 로컬 호환성 경로 설정]
+    # 1. 상대 경로 시도 (Streamlit Cloud용)
+    data_dir = "./data/"
     csv_files = glob.glob(os.path.join(data_dir, "*.csv"))
+
+    # 2. 파일이 없으면 절대 경로 재시도 (로컬 실행 오류 방지)
+    if not csv_files:
+        # 현재 실행 중인 파일(app_sales.py)의 디렉토리를 구함
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        data_dir = os.path.join(current_dir, "data")
+        csv_files = glob.glob(os.path.join(data_dir, "*.csv"))
     
     if not csv_files:
         return pd.DataFrame()
