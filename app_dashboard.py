@@ -72,6 +72,32 @@ def load_data(path):
         return df
     return None
 
+@st.cache_data
+def load_click_data():
+    paths = glob.glob('data/salesclick_*.csv')
+    if not paths: return None
+    
+    # 최신 파일 선택
+    latest_click_path = sorted(paths)[-1]
+    try:
+        click_df = pd.read_csv(latest_click_path, encoding='utf-8-sig')
+    except:
+        click_df = pd.read_csv(latest_click_path, encoding='cp949')
+    
+    # 합계 컬럼에서 클릭수 추출 (예: "16649 1551 (9.32%)" -> 16649)
+    def extract_clicks(val):
+        if isinstance(val, str):
+            match = re.search(r'^(\d+)', val)
+            if match: return int(match.group(1))
+        return 0
+    
+    if '합계' in click_df.columns:
+        click_df['클릭수'] = click_df['합계'].apply(extract_clicks)
+    else:
+        click_df['클릭수'] = 0
+        
+    return click_df[['상품코드', '클릭수']]
+
 df = load_data(DATA_PATH)
 
 # 캐시/데이터 확인용 메시지 (개발용)
@@ -82,7 +108,7 @@ if df is not None:
         st.toast(f"데이터 로드 성공: {os.path.basename(DATA_PATH)} (이벤트 컬럼 없음!)", icon="⚠️")
 
 if df is not None:
-    st.title("🍊 제주 세일즈 데이터 분석 대시보드")
+    st.title("🍊 제주 농산품 판매 분석 대시보드")
     
     # 사이드바 필터
     st.sidebar.header("🔍 검색 필터")
@@ -253,27 +279,6 @@ if df is not None:
         st.dataframe(seller_deep.style.format({'매출액': '{:,.0f}', '이익': '{:,.0f}', '이익률(%)': '{:.2f}', '주문건수': '{:,.0f}', '재구매율': '{:.2f}'}), use_container_width=True)
 
     with tab4:
-        st.subheader("🕒 요일 및 시간대별 구매패턴 분석")
-        day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-        heat_data = filtered_df.groupby(['요일', '시간'])['실결제 금액'].sum().reset_index()
-        heat_pivot = heat_data.pivot(index='요일', columns='시간', values='실결제 금액').reindex(day_order).fillna(0)
-        fig_heat_time = px.imshow(heat_pivot, labels=dict(x="시간(Hour)", y="요일(Day)", color="매출액"), x=[f"{h}시" for h in range(24)], y=day_order, color_continuous_scale='Oranges', title="주간 구매 골든타임 히트맵")
-        st.plotly_chart(fig_heat_time, use_container_width=True)
-        
-        peak = heat_data.loc[heat_data['실결제 금액'].idxmax()]
-        st.success(f"**💡 핵심 인사이트**: 현재 데이터상 가장 구매가 활발한 요일은 **{peak['요일']}**, 시간대는 **{peak['시간']}시**입니다.")
-
-    with tab5:
-        st.subheader("📋 경영 및 마케팅 전략 통합 보고서")
-        def load_report(filename):
-            try:
-                with open(filename, "r", encoding="utf-8") as f: return f.read()
-            except: return "보고서 파일을 찾을 수 없습니다."
-        r_tab1, r_tab2 = st.tabs(["🚀 마케팅 전략 분석", "📊 EDA 종합 분석"])
-        with r_tab1: st.markdown(load_report("docs/analysis/marketing_strategy_report.md"))
-        with r_tab2: st.markdown(load_report("docs/analysis/eda_comprehensive_report.md"))
-        
-    with tab6:
         st.subheader("📉 셀러 활동성 및 이탈 리스크 분석")
         today = df['주문일자'].max()
         seller_activity = df.groupby('셀러명').agg({'주문일자': 'max', '주문번호': 'count', '실결제 금액': 'sum'}).reset_index()
@@ -292,6 +297,59 @@ if df is not None:
         with c6_2:
             st.dataframe(seller_activity.sort_values('일탈일수', ascending=False).head(10)[['셀러명', '주문일자', '일탈일수', '이탈리스크']], use_container_width=True)
 
+    with tab5:
+        st.subheader("� 요일 및 시간대별 구매패턴 분석")
+        day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+        heat_data = filtered_df.groupby(['요일', '시간'])['실결제 금액'].sum().reset_index()
+        heat_pivot = heat_data.pivot(index='요일', columns='시간', values='실결제 금액').reindex(day_order).fillna(0)
+        fig_heat_time = px.imshow(heat_pivot, labels=dict(x="시간(Hour)", y="요일(Day)", color="매출액"), x=[f"{h}시" for h in range(24)], y=day_order, color_continuous_scale='Oranges', title="주간 구매 골든타임 히트맵")
+        st.plotly_chart(fig_heat_time, use_container_width=True)
+        
+        peak = heat_data.loc[heat_data['실결제 금액'].idxmax()]
+        st.success(f"**💡 핵심 인사이트**: 현재 데이터상 가장 구매가 활발한 요일은 **{peak['요일']}**, 시간대는 **{peak['시간']}시**입니다.")
+        
+    with tab6:
+        st.subheader("👥 고객 분석 및 재구매 패턴")
+        cust_stats = filtered_df.groupby('UID').agg({'주문번호': 'count', '실결제 금액': 'sum', '주문일자': ['min', 'max']}).reset_index()
+        cust_stats.columns = ['UID', '구매횟수', '총구매액', '최초구매일', '마지막구매일']
+        total_cust = len(cust_stats); repeat_cust = len(cust_stats[cust_stats['구매횟수'] > 1])
+        st.columns(3)[0].metric("총 고유 고객수", f"{total_cust:,.0f}명"); st.columns(3)[1].metric("재구매 고객수", f"{repeat_cust:,.0f}명"); st.columns(3)[2].metric("재구매율", f"{(repeat_cust/total_cust*100) if total_cust>0 else 0:.1f}%")
+        st.plotly_chart(px.bar(cust_stats.groupby('구매횟수').size().reset_index(name='고객수'), x='구매횟수', y='고객수', title="구매 빈도 분포"), use_container_width=True)
+
+        st.markdown("---")
+        st.subheader("🎯 셀러별 주문 전환율 (CVR) 분석")
+        
+        click_df = load_click_data()
+        if click_df is not None and df is not None:
+            # 셀러-상품코드 매핑 생성
+            seller_map = df[['상품코드', '셀러명']].drop_duplicates().groupby('상품코드')['셀러명'].first()
+            click_df['셀러명'] = click_df['상품코드'].map(seller_map)
+            
+            # 셀러별 클릭수 합산
+            seller_clicks = click_df.groupby('셀러명')['클릭수'].sum().reset_index()
+            
+            # 필터링된 셀러별 주문수 합산
+            seller_orders = filtered_df.groupby('셀러명').size().reset_index(name='주문건수')
+            
+            # 병합 및 CVR 계산
+            cvr_df = pd.merge(seller_orders, seller_clicks, on='셀러명', how='left').fillna(0)
+            cvr_df['CVR'] = (cvr_df['주문건수'] / cvr_df['클릭수'] * 100).replace([float('inf'), -float('inf')], 0).fillna(0)
+            
+            # 상위 15개 셀러 시각화
+            cvr_plot_df = cvr_df[cvr_df['클릭수'] > 0].sort_values('CVR', ascending=False).head(15)
+            
+            if not cvr_plot_df.empty:
+                fig_cvr = px.bar(cvr_plot_df, x='셀러명', y='CVR', text_auto='.1f', 
+                                 title="TOP 15 셀러 주문 전환율 (CVR, %)", 
+                                 labels={'CVR': '전환율 (%)', '셀러명': '셀러명'},
+                                 color='CVR', color_continuous_scale='Blues')
+                st.plotly_chart(fig_cvr, use_container_width=True)
+                st.info("💡 **CVR(Conversion Rate)**: 클릭 대비 실제 주문이 발생한 비율입니다. 전환율이 높을수록 마케팅 효율이 좋음을 의미합니다.")
+            else:
+                st.warning("분석 가능한 클릭 데이터가 없습니다.")
+        else:
+            st.info("클릭 데이터 파일(salesclick_*.csv)을 찾을 수 없어 전환율 분석을 표시할 수 없습니다.")
+
     with tab7:
         st.subheader("📍 핵심 지역 특성 분석")
         top_regions = filtered_df.groupby('광역지역(정식)')['실결제 금액'].sum().nlargest(3).index.tolist()
@@ -304,12 +362,14 @@ if df is not None:
                     with r_col2: st.plotly_chart(px.bar(r_df.groupby('가격대')['주문번호'].count().reset_index(), x='가격대', y='주문번호', title=f"{region} 선호 가격대"), use_container_width=True)
 
     with tab8:
-        st.subheader("👥 고객 분석 및 재구매 패턴")
-        cust_stats = filtered_df.groupby('UID').agg({'주문번호': 'count', '실결제 금액': 'sum', '주문일자': ['min', 'max']}).reset_index()
-        cust_stats.columns = ['UID', '구매횟수', '총구매액', '최초구매일', '마지막구매일']
-        total_cust = len(cust_stats); repeat_cust = len(cust_stats[cust_stats['구매횟수'] > 1])
-        st.columns(3)[0].metric("총 고유 고객수", f"{total_cust:,.0f}명"); st.columns(3)[1].metric("재구매 고객수", f"{repeat_cust:,.0f}명"); st.columns(3)[2].metric("재구매율", f"{(repeat_cust/total_cust*100) if total_cust>0 else 0:.1f}%")
-        st.plotly_chart(px.bar(cust_stats.groupby('구매횟수').size().reset_index(name='고객수'), x='구매횟수', y='고객수', title="구매 빈도 분포"), use_container_width=True)
+        st.subheader("📋 경영 및 마케팅 전략 통합 보고서")
+        def load_report(filename):
+            try:
+                with open(filename, "r", encoding="utf-8") as f: return f.read()
+            except: return "보고서 파일을 찾을 수 없습니다."
+        r_tab1, r_tab2 = st.tabs(["🚀 마케팅 전략 분석", "📊 EDA 종합 분석"])
+        with r_tab1: st.markdown(load_report("docs/analysis/marketing_strategy_report.md"))
+        with r_tab2: st.markdown(load_report("docs/analysis/eda_comprehensive_report.md"))
 
 else:
     st.error("데이터 파일을 찾을 수 없습니다. 경로: 'data/preprocessed_data.csv'")
